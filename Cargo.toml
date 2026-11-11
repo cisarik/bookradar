@@ -6,3 +6,8 @@ rust-version = "1.99.1"
 description = "Deterministic domain rules for BookRadar book-offer observations."
 repository = "https://github.com/cisarik/bookradar"
 publish = false
+
+[workspace]
+members = [".", "crates/bookradar-store"]
+default-members = [".", "crates/bookradar-store"]
+resolver = "3"
