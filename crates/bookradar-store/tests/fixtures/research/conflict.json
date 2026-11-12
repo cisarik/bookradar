@@ -1,0 +1,73 @@
+{
+  "contract": "bookradar-research",
+  "contract_version": 1,
+  "producer_id": "synthetic:producer",
+  "run_id": "synthetic:run",
+  "run_context": {
+    "agent": {"name": "synthetic-agent", "version": "0"},
+    "model": {"name": "synthetic-model", "version": null},
+    "skills": [],
+    "tools": null,
+    "context": "synthetic-context"
+  },
+  "reported_run_outcome": "succeeded",
+  "findings": [
+    {
+      "finding_id": "F1",
+      "source_ref": "synthetic:source",
+      "listing_ref": "OFFER-A",
+      "listing_generation": "generation-1",
+      "subject": {
+        "state": "candidate",
+        "candidate_ref": "synthetic:candidate",
+        "identifiers": []
+      },
+      "times": {
+        "observed_at": {
+          "original": "synthetic:observed-f1",
+          "offset_seconds": 3600,
+          "instant": {"unix_seconds": 1793541600, "nanoseconds": 0}
+        },
+        "accessed_at": {
+          "original": "synthetic:accessed-f1",
+          "offset_seconds": 3600,
+          "instant": {"unix_seconds": 1793541601, "nanoseconds": 0}
+        },
+        "captured_at": {
+          "original": "synthetic:captured-f1",
+          "offset_seconds": 3600,
+          "instant": {"unix_seconds": 1793541602, "nanoseconds": 0}
+        },
+        "source_updated_at": {
+          "original": null,
+          "offset_seconds": null,
+          "instant": null
+        }
+      },
+      "facts": {
+        "language": "slovak",
+        "access": "readable",
+        "listing": "present",
+        "availability": "reserved",
+        "source_statement": "synthetic:in-stock",
+        "price": {"amount": "12.00", "currency": "EUR", "basis": "per-copy"},
+        "claim_text": "synthetic claim"
+      },
+      "evidence": [
+        {
+          "reference": "synthetic:evidence:f1",
+          "reported_method": "agent-only",
+          "state": "present",
+          "supports": ["subject", "language", "availability"],
+          "excerpt": "synthetic excerpt"
+        }
+      ],
+      "uncertainty": {"rationale": null, "reported_confidence": null},
+      "source_provenance": {
+        "requested_url": "synthetic:requested",
+        "resolved_url": "synthetic:resolved",
+        "redirect_reference": null
+      }
+    }
+  ]
+}

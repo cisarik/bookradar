@@ -8,3 +8,5 @@ publish = false
 [dependencies]
 bookradar-core = { path = "../.." }
 rusqlite = { version = "=0.37.0", default-features = false, features = ["bundled"] }
+serde = { version = "=1.0.228", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.145", default-features = false, features = ["std"] }

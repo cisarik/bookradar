@@ -4,27 +4,28 @@ BookRadar is intended to monitor and research availability of physical
 Slovak-language books, including used editions and accurate differentiation
 from Czech editions. Rust is the selected implementation language.
 
-Status: the workspace contains a dependency-free `bookradar-core` verification
-kernel and a local `bookradar-store` proof of persistent observation history.
-Ingestion, a user interface, deployment, and a running monitor remain
-unimplemented. License and contribution policies remain undecided.
+Status: the workspace contains a dependency-free `bookradar-core` verification kernel, local observation history, and a synthetic research-ingestion proof. The research boundary validates strict versioned JSON, retains quarantine and replay conflicts in a separate SQLite ledger, and creates only unreviewed or disputed candidates. Structural admission does not establish truth or verified stock. A user interface, live ingestion, deployment, and a running monitor remain unimplemented. License and contribution policies remain undecided.
 
 ## Workspace
 
 | Package | Role |
 |---|---|
 | `bookradar-core` | Stateless verification of one supplied observation and one explicit assessment context. |
-| `bookradar-store` | Local SQLite history, deterministic current-candidate selection, and the `bookradar-poc` binary. |
+| `bookradar-store` | Local SQLite history, deterministic current-candidate selection, the `bookradar-poc` binary, and the `bookradar-research` binary. |
 
 ```text
 bookradar-poc → bookradar-store → bookradar-core
+bookradar-research → bookradar-store → bookradar-core
                               → rusqlite / bundled SQLite
+                              → serde / serde_json
 ```
 
 `bookradar-core` stays dependency-free and unpublished. `bookradar-store`
-depends on that path and on `rusqlite` `0.37.0` with the `bundled` feature and
-default features disabled. No public API stability is promised. The core
-package does not gain a storage or SQLite dependency.
+depends on that path, on `rusqlite` `0.37.0` with the `bundled` feature and
+default features disabled, and on exact `serde` `1.0.228` and `serde_json`
+`1.0.145` with default features disabled and `std` enabled. The research
+decoder does not enable `derive`. No public API stability is promised. The
+core package does not gain a storage, JSON, or SQLite dependency.
 
 The decision records are
 [ADR 0003: Rust domain foundation](docs/adr/0003-rust-domain-foundation.md) and
@@ -37,6 +38,8 @@ The decision records are
 - [ADR 0002: Evidence-backed observations and untrusted research admission](docs/adr/0002-evidence-and-research-trust-boundary.md)
 - [ADR 0003: Rust domain foundation](docs/adr/0003-rust-domain-foundation.md)
 - [ADR 0004: Local persistence and history](docs/adr/0004-local-persistence-and-history.md)
+- [Research input v1](docs/research-input-v1.md)
+- [ADR 0005: Versioned research admission](docs/adr/0005-versioned-research-admission.md)
 - [Repository instructions](AGENTS.md)
 
 ## Working with the repository
@@ -131,3 +134,54 @@ or print “Sold out.”
 A durable format change needs a separately authorized migration. This
 repository does not select a license, contribution policy, privacy policy, or
 release process.
+
+## Synthetic research ingestion proof
+
+`bookradar-research` validates untrusted research JSON and stores it in a
+separate ledger. The price field is the asserted asking price only. Shipping,
+fees, totals, ranges, currency conversion, and price history are not
+represented. Passing validation does not establish truth, reviewer approval,
+eligibility, or verified stock.
+
+The example files are synthetic. Build the binary, then run:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo +1.99.1 build --locked --offline -p bookradar-store --bin bookradar-research
+target/debug/bookradar-research init target/research-ingestion/demo.sqlite
+target/debug/bookradar-research import target/research-ingestion/demo.sqlite crates/bookradar-store/tests/fixtures/research/partial.json 1793545201
+target/debug/bookradar-research import target/research-ingestion/demo.sqlite crates/bookradar-store/tests/fixtures/research/partial.json 1793545202
+target/debug/bookradar-research current target/research-ingestion/demo.sqlite synthetic:producer synthetic:source OFFER-A generation-1 10 1793548800
+target/debug/bookradar-research import target/research-ingestion/demo.sqlite crates/bookradar-store/tests/fixtures/research/conflict.json 1793545203
+target/debug/bookradar-research inspect target/research-ingestion/demo.sqlite
+```
+
+| Invocation | stdout | Exit |
+|---|---|---:|
+| Init | `created research_schema=1` | 0 |
+| First partial import | `run=partial seen=3 admitted=1 replayed=0 rejected=1 quarantined=1 conflicts=0 projected=1` | 3 |
+| Identical partial replay | `run=partial seen=3 admitted=0 replayed=1 rejected=1 quarantined=1 conflicts=0 projected=0` | 3 |
+| Current before conflict | `candidates=1 conflict=clear recheck=clear verification=not-eligible` | 0 |
+| Changed F1 payload | `run=quarantined seen=1 admitted=0 replayed=0 rejected=0 quarantined=1 conflicts=1 projected=0` | 3 |
+| Current after conflict | `candidates=1 conflict=unresolved recheck=clear verification=not-eligible` | 0 |
+
+After those imports, `inspect` prints:
+
+```text
+envelopes=2 runs=1 findings=4 observations=1 reviews=2
+input=1 finding=0 outcome=admitted reason=none knowledge=disputed
+input=1 finding=1 outcome=rejected reason=missing-finding-id
+input=1 finding=2 outcome=quarantined reason=invalid-availability
+input=2 finding=0 outcome=quarantined reason=identity-conflict
+```
+
+Exit `0` is a successful operation, including a complete replay, an empty
+inspection, or a non-eligible current reading. Exit `3` means the input was
+persisted and is partial or quarantined. Exit `2` is a usage error, an invalid
+operator identifier or time, or an oversized input rejected before storage.
+Exit `1` is a filesystem, ledger, busy, range, or transaction failure.
+
+The wire contract is [research input v1](docs/research-input-v1.md). The
+storage decision is [ADR 0005](docs/adr/0005-versioned-research-admission.md).
+The target edition id on `current` is supplied by the operator. It is not read
+from the finding, and the ledger does not create an edition registry record.

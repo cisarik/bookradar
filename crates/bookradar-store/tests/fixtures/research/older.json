@@ -1,0 +1,57 @@
+{
+  "contract": "bookradar-research",
+  "contract_version": 1,
+  "producer_id": "synthetic:producer",
+  "run_id": "synthetic:run",
+  "run_context": {
+    "agent": {"name": "synthetic-agent", "version": "0"},
+    "model": {"name": "synthetic-model", "version": null},
+    "skills": [],
+    "tools": null,
+    "context": "synthetic-context"
+  },
+  "reported_run_outcome": "succeeded",
+  "findings": [
+    {
+      "finding_id": "synthetic:older",
+      "source_ref": "synthetic:source",
+      "listing_ref": "OFFER-A",
+      "listing_generation": "generation-1",
+      "subject": {
+        "state": "candidate",
+        "candidate_ref": "synthetic:older",
+        "identifiers": []
+      },
+      "times": {
+        "observed_at": {
+          "original": "synthetic:observed-older",
+          "offset_seconds": 3600,
+          "instant": {"unix_seconds": 1793540000, "nanoseconds": 0}
+        },
+        "accessed_at": {"original": null, "offset_seconds": null, "instant": null},
+        "captured_at": {"original": "synthetic:captured-older", "offset_seconds": 3600, "instant": {"unix_seconds": 1793540000, "nanoseconds": 0}},
+        "source_updated_at": {"original": null, "offset_seconds": null, "instant": null}
+      },
+      "facts": {
+        "language": "czech",
+        "access": "readable",
+        "listing": "present",
+        "availability": "unavailable",
+        "source_statement": "synthetic:older",
+        "price": {"amount": "300", "currency": "CZK", "basis": "per-lot"},
+        "claim_text": null
+      },
+      "evidence": [
+        {
+          "reference": "synthetic:evidence:older",
+          "reported_method": "manual",
+          "state": "present",
+          "supports": ["availability", "language"],
+          "excerpt": null
+        }
+      ],
+      "uncertainty": {"rationale": "synthetic uncertainty", "reported_confidence": null},
+      "source_provenance": {"requested_url": "synthetic:older-requested", "resolved_url": "synthetic:older-resolved", "redirect_reference": "synthetic:redirect"}
+    }
+  ]
+}

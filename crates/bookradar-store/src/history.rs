@@ -146,6 +146,10 @@ pub(crate) fn sort_entries(entries: &mut [HistoryEntry]) {
     entries.sort_by(history_order);
 }
 
+pub(crate) fn observations_incompatible(left: &Observation, right: &Observation) -> bool {
+    incompatible(left, right)
+}
+
 pub(crate) fn resolve(
     entries: &[HistoryEntry],
     target: EditionId,

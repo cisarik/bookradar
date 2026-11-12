@@ -1,7 +1,7 @@
 //! Exclusive SQLite creation, checked encoding, and append-only writes.
 
 use std::fs::OpenOptions;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -343,6 +343,7 @@ impl Store {
                 reason: "path-is-directory",
             });
         }
+        ensure_expected_application_id(path, APPLICATION_ID)?;
         let flags = match mode {
             OpenMode::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
             OpenMode::ReadWrite => OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -364,23 +365,11 @@ impl Store {
         review: Option<&ReviewDraft>,
     ) -> Result<(), StoreError> {
         self.require_writable()?;
-        record.revalidate()?;
-        if let Some(draft) = review {
-            draft.revalidate()?;
-        }
-        let encoded = EncodedObservation::encode(record)?;
-        let encoded_review = review
-            .map(|draft| EncodedReview::encode(draft, 1))
-            .transpose()?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite)?;
-        insert_registries(&tx, record)?;
-        insert_observation(&tx, &encoded)?;
-        if let Some(encoded_review) = encoded_review.as_ref() {
-            insert_review(&tx, record.observation().reference(), encoded_review)?;
-        }
+        write_observation(&tx, record, review)?;
         tx.commit().map_err(map_sqlite)
     }
 
@@ -394,51 +383,13 @@ impl Store {
         draft: &ReviewDraft,
     ) -> Result<u64, StoreError> {
         self.require_writable()?;
-        draft.revalidate()?;
-        let expected =
-            i64::try_from(expected_revision).map_err(|_| StoreError::OutOfStorageRange)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite)?;
-        let (source, offer, id) = offer_key(observation)?;
-        let current: Option<i64> = tx
-            .query_row(
-                "SELECT MAX(revision) FROM reviews
-                 WHERE source_id = ?1 AND offer_id = ?2 AND observation_id = ?3",
-                params![source, offer, id],
-                |row| row.get(0),
-            )
-            .map_err(map_sqlite)?;
-        let current = current.unwrap_or(0);
-        if current != expected {
-            return Err(StoreError::ReviewRevisionConflict);
-        }
-        if current > 0 {
-            let (previous_seconds, previous_nanos): (i64, i64) = tx
-                .query_row(
-                    "SELECT assessed_s, assessed_ns FROM reviews
-                     WHERE source_id = ?1 AND offer_id = ?2 AND observation_id = ?3
-                       AND revision = ?4",
-                    params![source, offer, id, current],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(map_sqlite)?;
-            let (seconds, nanos) = encode_instant(draft.assessed_at())?;
-            if (seconds, i64::from(nanos)) < (previous_seconds, previous_nanos) {
-                return Err(StoreError::InvalidReview {
-                    reason: "assessment-time-regressed",
-                });
-            }
-        }
-        let next = current
-            .checked_add(1)
-            .ok_or(StoreError::OutOfStorageRange)?;
-        let mut encoded = EncodedReview::encode(draft, next)?;
-        encoded.revision = next;
-        insert_review(&tx, observation, &encoded)?;
+        let next = write_review(&tx, observation, expected_revision, draft)?;
         tx.commit().map_err(map_sqlite)?;
-        u64::try_from(next).map_err(|_| StoreError::OutOfStorageRange)
+        Ok(next)
     }
 
     /// Returns every observation of one offer, ordered for display.
@@ -476,138 +427,31 @@ impl Store {
     }
 
     fn configure(&self) -> Result<(), StoreError> {
-        self.conn
-            .pragma_update(None, "foreign_keys", "ON")
-            .map_err(map_sqlite)?;
-        self.conn.busy_timeout(Duration::ZERO).map_err(map_sqlite)?;
-        self.conn
-            .pragma_update(None, "synchronous", "FULL")
-            .map_err(map_sqlite)?;
-        Ok(())
+        configure_connection(&self.conn)
     }
 
     fn select_delete_journal(&self) -> Result<(), StoreError> {
-        let mode: String = self
-            .conn
-            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if mode.eq_ignore_ascii_case("delete") {
-            Ok(())
-        } else {
-            Err(StoreError::UnsupportedFormat {
-                reason: "journal-mode",
-            })
-        }
+        set_delete_journal(&self.conn)
     }
 
     fn validate(&self) -> Result<(), StoreError> {
-        let journal: String = self
-            .conn
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if !journal.eq_ignore_ascii_case("delete") {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "journal-mode",
-            });
-        }
-        let synchronous: i64 = self
-            .conn
-            .query_row("PRAGMA synchronous", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if synchronous != 2 {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "synchronous",
-            });
-        }
-        let foreign_keys: i64 = self
-            .conn
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if foreign_keys != 1 {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "foreign-keys",
-            });
-        }
-        let mut quick = self
-            .conn
-            .prepare("PRAGMA quick_check")
-            .map_err(map_sqlite)?;
-        let quick_rows = quick
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(map_sqlite)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(map_sqlite)?;
-        if quick_rows != ["ok"] {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "quick-check",
-            });
-        }
-        let application_id: i64 = self
-            .conn
-            .query_row("PRAGMA application_id", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if application_id != APPLICATION_ID {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "application-id",
-            });
-        }
-        let user_version: i64 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(map_sqlite)?;
-        if user_version != USER_VERSION {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "user-version",
-            });
-        }
-        let mut foreign = self
-            .conn
-            .prepare("PRAGMA foreign_key_check")
-            .map_err(map_sqlite)?;
-        let foreign_count = foreign
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(map_sqlite)?
-            .count();
-        if foreign_count > 0 {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "foreign-key",
-            });
-        }
-        self.validate_schema_objects()?;
-        if !self.writable {
-            self.conn
-                .pragma_update(None, "query_only", "ON")
-                .map_err(map_sqlite)?;
-        }
-        Ok(())
+        validate_database(
+            &self.conn,
+            self.writable,
+            APPLICATION_ID,
+            USER_VERSION,
+            EXPECTED_OBJECTS,
+        )
     }
 
-    fn validate_schema_objects(&self) -> Result<(), StoreError> {
-        let mut statement = self
+    fn load_offer(&mut self, offer: OfferRef) -> Result<Vec<HistoryEntry>, StoreError> {
+        let tx = self
             .conn
-            .prepare(
-                "SELECT type, name FROM sqlite_master
-                 WHERE name NOT LIKE 'sqlite_%'
-                 ORDER BY type, name",
-            )
+            .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(map_sqlite)?;
-        let found = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(map_sqlite)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(map_sqlite)?;
-        let expected: Vec<(String, String)> = EXPECTED_OBJECTS
-            .iter()
-            .map(|(kind, name)| ((*kind).to_owned(), (*name).to_owned()))
-            .collect();
-        if found != expected {
-            return Err(StoreError::UnsupportedFormat {
-                reason: "schema-objects",
-            });
-        }
-        Ok(())
+        let entries = load_history(&tx, offer)?;
+        tx.commit().map_err(map_sqlite)?;
+        Ok(entries)
     }
 
     fn require_writable(&self) -> Result<(), StoreError> {
@@ -617,65 +461,271 @@ impl Store {
             Err(StoreError::ReadOnly)
         }
     }
+}
 
-    fn load_offer(&mut self, offer: OfferRef) -> Result<Vec<HistoryEntry>, StoreError> {
-        let source = fit_id(offer.source().get())?;
-        let offer_id = fit_id(offer.offer().get())?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Deferred)
-            .map_err(map_sqlite)?;
-        let mut observations = tx
-            .prepare(
-                "SELECT source_id, offer_id, id, subject, edition_id, language,
-                        observed_original, observed_offset, observed_s, observed_ns,
-                        captured_original, captured_offset, captured_s, captured_ns,
-                        ingested_s, ingested_ns, access, listing, availability,
-                        source_statement, evidence_method, evidence_reference,
-                        subject_covered, language_covered, availability_covered,
-                        requested_url, resolved_url, redirect_reference,
-                        provenance_reference, uncertainty_rationale
-                 FROM observations
-                 WHERE source_id = ?1 AND offer_id = ?2
-                 ORDER BY id",
-            )
-            .map_err(map_sqlite)?;
-        let records = observations
-            .query_map(params![source, offer_id], decode_observation_row)
-            .map_err(map_sqlite)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(map_stored_row)?;
-        let mut reviews = tx
-            .prepare(
-                "SELECT observation_id, revision, assessed_s, assessed_ns, recorded_s,
-                        recorded_ns, knowledge, reviewer_approval, assessor_reference, rationale
-                 FROM reviews
-                 WHERE source_id = ?1 AND offer_id = ?2
-                 ORDER BY observation_id, revision",
-            )
-            .map_err(map_sqlite)?;
-        let review_rows = reviews
-            .query_map(params![source, offer_id], decode_review_row)
-            .map_err(map_sqlite)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(map_stored_row)?;
-        drop(reviews);
-        drop(observations);
-        tx.commit().map_err(map_sqlite)?;
-
-        let mut entries: Vec<HistoryEntry> = records.into_iter().map(HistoryEntry::bare).collect();
-        for (observation_id, revision) in review_rows {
-            let Some(entry) = entries.iter_mut().find(|entry| {
-                entry.record().observation().reference().observation().get() == observation_id
-            }) else {
-                return Err(StoreError::UnsupportedFormat {
-                    reason: "orphan-review",
-                });
-            };
-            entry.push_review(revision);
-        }
-        Ok(entries)
+pub(crate) fn ensure_expected_application_id(path: &Path, expected: i64) -> Result<(), StoreError> {
+    let mut file = std::fs::File::open(path).map_err(StoreError::Io)?;
+    let mut header = [0u8; 72];
+    let read = file.read(&mut header).map_err(StoreError::Io)?;
+    if read < 72 || &header[..16] != b"SQLite format 3\0" {
+        return Ok(());
     }
+    let application_id = i64::from(u32::from_be_bytes([
+        header[68], header[69], header[70], header[71],
+    ]));
+    if application_id != 0 && application_id != expected {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "application-id",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn configure_connection(conn: &Connection) -> Result<(), StoreError> {
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(map_sqlite)?;
+    conn.busy_timeout(Duration::ZERO).map_err(map_sqlite)?;
+    conn.pragma_update(None, "synchronous", "FULL")
+        .map_err(map_sqlite)?;
+    Ok(())
+}
+
+pub(crate) fn set_delete_journal(conn: &Connection) -> Result<(), StoreError> {
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if mode.eq_ignore_ascii_case("delete") {
+        Ok(())
+    } else {
+        Err(StoreError::UnsupportedFormat {
+            reason: "journal-mode",
+        })
+    }
+}
+
+pub(crate) fn validate_database(
+    conn: &Connection,
+    writable: bool,
+    application_id_expected: i64,
+    user_version_expected: i64,
+    expected_objects: &[(&str, &str)],
+) -> Result<(), StoreError> {
+    let journal: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if !journal.eq_ignore_ascii_case("delete") {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "journal-mode",
+        });
+    }
+    let synchronous: i64 = conn
+        .query_row("PRAGMA synchronous", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if synchronous != 2 {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "synchronous",
+        });
+    }
+    let foreign_keys: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if foreign_keys != 1 {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "foreign-keys",
+        });
+    }
+    let mut quick = conn.prepare("PRAGMA quick_check").map_err(map_sqlite)?;
+    let quick_rows = quick
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(map_sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_sqlite)?;
+    if quick_rows != ["ok"] {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "quick-check",
+        });
+    }
+    let application_id: i64 = conn
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if application_id != application_id_expected {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "application-id",
+        });
+    }
+    let user_version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(map_sqlite)?;
+    if user_version != user_version_expected {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "user-version",
+        });
+    }
+    let mut foreign = conn
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(map_sqlite)?;
+    let foreign_count = foreign
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(map_sqlite)?
+        .count();
+    if foreign_count > 0 {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "foreign-key",
+        });
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT type, name FROM sqlite_master
+             WHERE name NOT LIKE 'sqlite_%'
+             ORDER BY type, name",
+        )
+        .map_err(map_sqlite)?;
+    let found = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(map_sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_sqlite)?;
+    let expected: Vec<(String, String)> = expected_objects
+        .iter()
+        .map(|(kind, name)| ((*kind).to_owned(), (*name).to_owned()))
+        .collect();
+    if found != expected {
+        return Err(StoreError::UnsupportedFormat {
+            reason: "schema-objects",
+        });
+    }
+    if !writable {
+        conn.pragma_update(None, "query_only", "ON")
+            .map_err(map_sqlite)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn load_history(
+    conn: &Connection,
+    offer: OfferRef,
+) -> Result<Vec<HistoryEntry>, StoreError> {
+    let source = fit_id(offer.source().get())?;
+    let offer_id = fit_id(offer.offer().get())?;
+    let mut observations = conn
+        .prepare(
+            "SELECT source_id, offer_id, id, subject, edition_id, language,
+                    observed_original, observed_offset, observed_s, observed_ns,
+                    captured_original, captured_offset, captured_s, captured_ns,
+                    ingested_s, ingested_ns, access, listing, availability,
+                    source_statement, evidence_method, evidence_reference,
+                    subject_covered, language_covered, availability_covered,
+                    requested_url, resolved_url, redirect_reference,
+                    provenance_reference, uncertainty_rationale
+             FROM observations
+             WHERE source_id = ?1 AND offer_id = ?2
+             ORDER BY id",
+        )
+        .map_err(map_sqlite)?;
+    let records = observations
+        .query_map(params![source, offer_id], decode_observation_row)
+        .map_err(map_sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_stored_row)?;
+    let mut reviews = conn
+        .prepare(
+            "SELECT observation_id, revision, assessed_s, assessed_ns, recorded_s,
+                    recorded_ns, knowledge, reviewer_approval, assessor_reference, rationale
+             FROM reviews
+             WHERE source_id = ?1 AND offer_id = ?2
+             ORDER BY observation_id, revision",
+        )
+        .map_err(map_sqlite)?;
+    let review_rows = reviews
+        .query_map(params![source, offer_id], decode_review_row)
+        .map_err(map_sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_stored_row)?;
+    drop(reviews);
+    drop(observations);
+
+    let mut entries: Vec<HistoryEntry> = records.into_iter().map(HistoryEntry::bare).collect();
+    for (observation_id, revision) in review_rows {
+        let Some(entry) = entries.iter_mut().find(|entry| {
+            entry.record().observation().reference().observation().get() == observation_id
+        }) else {
+            return Err(StoreError::UnsupportedFormat {
+                reason: "orphan-review",
+            });
+        };
+        entry.push_review(revision);
+    }
+    Ok(entries)
+}
+
+pub(crate) fn write_observation(
+    conn: &Connection,
+    record: &ObservationRecord,
+    review: Option<&ReviewDraft>,
+) -> Result<(), StoreError> {
+    record.revalidate()?;
+    if let Some(draft) = review {
+        draft.revalidate()?;
+    }
+    let encoded = EncodedObservation::encode(record)?;
+    let encoded_review = review
+        .map(|draft| EncodedReview::encode(draft, 1))
+        .transpose()?;
+    insert_registries(conn, record)?;
+    insert_observation(conn, &encoded)?;
+    if let Some(encoded_review) = encoded_review.as_ref() {
+        insert_review(conn, record.observation().reference(), encoded_review)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_review(
+    conn: &Connection,
+    observation: ObservationRef,
+    expected_revision: u64,
+    draft: &ReviewDraft,
+) -> Result<u64, StoreError> {
+    draft.revalidate()?;
+    let expected = i64::try_from(expected_revision).map_err(|_| StoreError::OutOfStorageRange)?;
+    let (source, offer, id) = offer_key(observation)?;
+    let current: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(revision) FROM reviews
+             WHERE source_id = ?1 AND offer_id = ?2 AND observation_id = ?3",
+            params![source, offer, id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)?;
+    let current = current.unwrap_or(0);
+    if current != expected {
+        return Err(StoreError::ReviewRevisionConflict);
+    }
+    if current > 0 {
+        let (previous_seconds, previous_nanos): (i64, i64) = conn
+            .query_row(
+                "SELECT assessed_s, assessed_ns FROM reviews
+                 WHERE source_id = ?1 AND offer_id = ?2 AND observation_id = ?3
+                   AND revision = ?4",
+                params![source, offer, id, current],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(map_sqlite)?;
+        let (seconds, nanos) = encode_instant(draft.assessed_at())?;
+        if (seconds, i64::from(nanos)) < (previous_seconds, previous_nanos) {
+            return Err(StoreError::InvalidReview {
+                reason: "assessment-time-regressed",
+            });
+        }
+    }
+    let next = current
+        .checked_add(1)
+        .ok_or(StoreError::OutOfStorageRange)?;
+    let mut encoded = EncodedReview::encode(draft, next)?;
+    encoded.revision = next;
+    insert_review(conn, observation, &encoded)?;
+    u64::try_from(next).map_err(|_| StoreError::OutOfStorageRange)
 }
 
 impl ObservationRecord {
@@ -1562,14 +1612,14 @@ fn decode_knowledge(value: &str) -> Result<KnowledgeAssessment, StoreError> {
     })
 }
 
-fn map_sqlite(error: rusqlite::Error) -> StoreError {
+pub(crate) fn map_sqlite(error: rusqlite::Error) -> StoreError {
     match error {
         rusqlite::Error::SqliteFailure(sqlite, message) => map_failure(sqlite, message),
         other => StoreError::Sqlite(other),
     }
 }
 
-fn map_open(error: rusqlite::Error) -> StoreError {
+pub(crate) fn map_open(error: rusqlite::Error) -> StoreError {
     match error {
         rusqlite::Error::SqliteFailure(sqlite, _message)
             if sqlite.code == ErrorCode::NotADatabase
