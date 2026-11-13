@@ -191,6 +191,22 @@ pub(crate) fn resolve(
     })
 }
 
+/// Returns the human current-truth lines for one view.
+///
+/// An empty view has no labels. Every other view uses the same lines as
+/// `render_current`, so selection predicates stay unchanged.
+pub fn render_current_labels(
+    view: &CurrentView,
+    target: EditionId,
+    now: SystemTime,
+) -> Vec<String> {
+    if view.is_empty() {
+        Vec::new()
+    } else {
+        human_lines(view, target, now)
+    }
+}
+
 /// Renders the synthetic CLI `current` transcript for one view.
 pub fn render_current(
     view: &CurrentView,
@@ -207,7 +223,7 @@ pub fn render_current(
         );
     }
     let mut lines = machine_lines(view);
-    lines.extend(human_lines(view, target, now));
+    lines.extend(render_current_labels(view, target, now));
     lines.join("\n")
 }
 

@@ -8,6 +8,6 @@ repository = "https://github.com/cisarik/bookradar"
 publish = false
 
 [workspace]
-members = [".", "crates/bookradar-store"]
-default-members = [".", "crates/bookradar-store"]
+members = [".", "crates/bookradar-store", "crates/bookradar-ui"]
+default-members = [".", "crates/bookradar-store", "crates/bookradar-ui"]
 resolver = "3"

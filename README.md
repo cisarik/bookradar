@@ -4,7 +4,7 @@ BookRadar is intended to monitor and research availability of physical
 Slovak-language books, including used editions and accurate differentiation
 from Czech editions. Rust is the selected implementation language.
 
-Status: the workspace contains a dependency-free `bookradar-core` verification kernel, local observation history, and a synthetic research-ingestion proof. The research boundary validates strict versioned JSON, retains quarantine and replay conflicts in a separate SQLite ledger, and creates only unreviewed or disputed candidates. Structural admission does not establish truth or verified stock. A user interface, live ingestion, deployment, and a running monitor remain unimplemented. License and contribution policies remain undecided.
+Status: the workspace contains a dependency-free `bookradar-core` verification kernel, local observation history, a synthetic research-ingestion proof, and a local read-only UI shell. The research boundary validates strict versioned JSON, retains quarantine and replay conflicts in a separate SQLite ledger, and creates only unreviewed or disputed candidates. Structural admission does not establish truth or verified stock. `bookradar-ui` renders one fixed startup snapshot on loopback; it is not a running monitor. Live ingestion and deployment remain unimplemented. License and contribution policies remain undecided.
 
 ## Workspace
 
@@ -12,10 +12,12 @@ Status: the workspace contains a dependency-free `bookradar-core` verification k
 |---|---|
 | `bookradar-core` | Stateless verification of one supplied observation and one explicit assessment context. |
 | `bookradar-store` | Local SQLite history, deterministic current-candidate selection, the `bookradar-poc` binary, and the `bookradar-research` binary. |
+| `bookradar-ui` | Local read-only HTML shell over one observation store and one research ledger. It adds no registry dependency. |
 
 ```text
 bookradar-poc → bookradar-store → bookradar-core
 bookradar-research → bookradar-store → bookradar-core
+bookradar-ui → bookradar-store → bookradar-core
                               → rusqlite / bundled SQLite
                               → serde / serde_json
 ```
@@ -28,8 +30,10 @@ decoder does not enable `derive`. No public API stability is promised. The
 core package does not gain a storage, JSON, or SQLite dependency.
 
 The decision records are
-[ADR 0003: Rust domain foundation](docs/adr/0003-rust-domain-foundation.md) and
-[ADR 0004: Local persistence and history](docs/adr/0004-local-persistence-and-history.md).
+[ADR 0003: Rust domain foundation](docs/adr/0003-rust-domain-foundation.md),
+[ADR 0004: Local persistence and history](docs/adr/0004-local-persistence-and-history.md),
+and
+[ADR 0007: Local read-only UI shell](docs/adr/0007-local-read-only-ui-shell.md).
 
 ## Domain documentation
 
@@ -40,6 +44,7 @@ The decision records are
 - [ADR 0004: Local persistence and history](docs/adr/0004-local-persistence-and-history.md)
 - [Research input v1](docs/research-input-v1.md)
 - [ADR 0005: Versioned research admission](docs/adr/0005-versioned-research-admission.md)
+- [ADR 0007: Local read-only UI shell](docs/adr/0007-local-read-only-ui-shell.md)
 - [Repository instructions](AGENTS.md)
 
 ## Working with the repository
@@ -134,14 +139,101 @@ rollback journal mode `DELETE`. Version 0, any other version, a corrupt file,
 a foreign-key violation, and a different journal mode fail closed. There is no
 automatic migration, reset, repair, or alternate-format fallback.
 
+## Local read-only UI shell
+
+`bookradar-ui` serves one English page for a caller-selected observation
+database and research ledger. It reads both files once, closes them, and then
+serves that snapshot until the process stops. The page has four sections:
+current assessment, observation history, research ledger, and research current
+candidates. There is no JavaScript, no JSON endpoint, and no query form. The
+evaluation instant is the required `--now` argument. Restart the process to
+change the query, the instant, or the loaded files.
+
+The binary accepts only a literal `127.0.0.1` bind. The default is
+`127.0.0.1:0`, and stdout prints `listening=http://127.0.0.1:<port>`. The
+default observation offer is source `1`, offer `1`. The default target edition
+is `10`. The default research key is `synthetic:producer`,
+`synthetic:source`, `OFFER-A`, `generation-1`. Optional flags are `--bind`,
+`--producer`, `--source-ref`, `--listing-ref`, `--listing-generation`, and
+`--target-edition`. `--help` prints usage and exits `0`. Invalid arguments
+exit `2` before any database or socket is opened. A bind failure exits `1`
+and does not try another address.
+
+The canonical gate builds the binary. The import wrapper below expects the
+existing partial or quarantined exit `3`. Run it from the repository root:
+
+```bash
+bash <<'SH'
+set -euo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
+bash scripts/verify.sh
+
+ui_demo_dir=$(mktemp -d "$PWD/target/bookradar-ui-demo.XXXXXX")
+
+target/debug/bookradar-poc init "$ui_demo_dir/observations.sqlite"
+for ui_fixture in available blocked recovered older; do
+  target/debug/bookradar-poc append-fixture \
+    "$ui_demo_dir/observations.sqlite" "$ui_fixture"
+done
+
+target/debug/bookradar-research init "$ui_demo_dir/research.sqlite"
+
+ui_expect_partial() {
+  local ui_import_status=0
+  "$@" || ui_import_status=$?
+  test "$ui_import_status" -eq 3
+}
+
+ui_expect_partial target/debug/bookradar-research import \
+  "$ui_demo_dir/research.sqlite" \
+  crates/bookradar-store/tests/fixtures/research/partial.json 1793545201
+
+ui_expect_partial target/debug/bookradar-research import \
+  "$ui_demo_dir/research.sqlite" \
+  crates/bookradar-store/tests/fixtures/research/partial.json 1793545202
+
+ui_expect_partial target/debug/bookradar-research import \
+  "$ui_demo_dir/research.sqlite" \
+  crates/bookradar-store/tests/fixtures/research/conflict.json 1793545203
+
+target/debug/bookradar-ui \
+  --store "$ui_demo_dir/observations.sqlite" \
+  --research-ledger "$ui_demo_dir/research.sqlite" \
+  --now 1793548800 \
+  --bind 127.0.0.1:0 \
+  --producer synthetic:producer \
+  --source-ref synthetic:source \
+  --listing-ref OFFER-A \
+  --listing-generation generation-1 \
+  --target-edition 10
+SH
+```
+
+Open the printed loopback URL manually and stop the process with Ctrl-C. The
+UI does not run the fixture-writing commands itself. This main demo shows
+observation history IDs `[4,1,2,3]`, current candidate `3`, checked-available
+expiry Unix `1793620800`, research counts `2/1/4/1/2`, a disputed candidate,
+an unresolved conflict, and `not-eligible`.
+
+Restart the same unchanged files with `--now 1793620800` to show expiry of
+that checked-available label. Prepare a separate observation database that
+contains only `available` and `blocked` when demonstrating a failed recheck.
+Empty databases come from the existing `init` commands. Missing, corrupt, and
+swapped files need their own paths. Do not overwrite an existing store to
+repeat a demonstration.
+
+The page is synthetic, local, and read-only. Verification text describes an
+evidenced source observation. It is not a guarantee that a purchase will
+succeed, and it is not a live monitor.
+
 ## What this repository does not provide
 
-No user interface, network ingestion, scraping, authentication, or deployment
-is implemented. Observations and reviews are append-only records supplied by
-the caller. A positive `bookradar-poc` line is a decision about those
-synthetic values at an injected instant. It is not a claim that a listing,
-screenshot, or purchase was checked in the real world. The CLI does not infer
-or print “Sold out.”
+No network ingestion, scraping, authentication, or deployment is implemented.
+The UI shell is a fixed local snapshot, not a running monitor. Observations
+and reviews are append-only records supplied by the caller. A positive
+`bookradar-poc` line is a decision about those synthetic values at an injected
+instant. It is not a claim that a listing, screenshot, or purchase was checked
+in the real world. The CLI does not infer or print “Sold out.”
 
 A durable format change needs a separately authorized migration. This
 repository does not select a license, contribution policy, privacy policy, or

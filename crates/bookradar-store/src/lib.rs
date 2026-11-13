@@ -13,11 +13,12 @@ mod store;
 
 pub use fixtures::{Fixture, append_fixture, synthetic_offer, synthetic_target};
 pub use history::{
-    CandidateAssessment, CurrentView, HistoryEntry, StockClaim, render_current, render_history,
+    CandidateAssessment, CurrentView, HistoryEntry, StockClaim, render_current,
+    render_current_labels, render_history,
 };
 pub use research::{
-    ImportContext, ImportReport, ResearchError, ResearchOfferKey, ResearchSnapshot, ResearchStore,
-    render_import, render_inspect, render_research_current,
+    FindingView, ImportContext, ImportReport, InputView, ResearchError, ResearchOfferKey,
+    ResearchSnapshot, ResearchStore, render_import, render_inspect, render_research_current,
 };
 pub use research_contract::{
     ValidationOutcome, ValidationPosition, ValidationReport, validate_research,
