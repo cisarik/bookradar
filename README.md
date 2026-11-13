@@ -53,25 +53,35 @@ available. The store does not link a system SQLite library and does not use
 `pkg-config` for it. Dependency resolution is a separate, explicit step: Cargo
 may fetch the pinned `rusqlite` `0.37.0` graph and its transitive crates from
 crates.io, write the workspace `Cargo.lock`, and compile the bundled engine.
-After that lockfile exists, the gates below are offline.
+
+`bash scripts/verify.sh` is the only local and CI gate. It checks Rust
+`1.99.1`, requires `/target/` and `/tests/target/` to be ignored without
+ignoring source files, fetches the locked dependency graph, and then builds,
+tests, checks formatting, and runs clippy offline. It requires the
+`bookradar-core` dependency tree to stay that one package, a clean diff check,
+and strict `./.ap/ap doctor`. It refuses a dirty worktree before those
+commands and requires a clean worktree afterward. The exact flags live in the
+script. The decision is
+[ADR 0006: Verification gate and CI](docs/adr/0006-verification-gate-and-ci.md).
 
 ```sh
 git clone --recurse-submodules https://github.com/cisarik/bookradar.git
 cd bookradar
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo +1.99.1 fetch
-cargo +1.99.1 build --workspace --all-targets --locked --offline
-cargo +1.99.1 test --workspace --locked --offline
-cargo +1.99.1 fmt --all --check
-cargo +1.99.1 clippy --workspace --all-targets --locked --offline -- -D warnings
-cargo +1.99.1 tree --locked --offline -p bookradar-core
-./.ap/ap doctor
+bash scripts/verify.sh
 ```
 
-`cargo tree -p bookradar-core` contains only `bookradar-core`. Tests inject
-every domain timestamp. They do not use the network, the wall clock, or
-credentials. `./.ap/ap doctor` checks the pinned protocol integration; it is
-not the Rust acceptance gate.
+Tests inject every domain timestamp. They do not use the network, the wall
+clock, or credentials. `./.ap/ap doctor` checks the pinned protocol
+integration; it is not the Rust acceptance gate.
+
+GitHub Actions workflow `verify` (`.github/workflows/verify.yml`) runs that
+script on push to `main`, on pull requests to `main`, and on manual dispatch.
+The job uses `ubuntu-24.04`, allows 20 minutes, and has `contents: read`
+permission. Checkout is `actions/checkout` at
+`3d3c42e5aac5ba805825da76410c181273ba90b1`. The workflow has no cache, no
+secrets, no deployment, and no schedule. This README does not claim that a
+public run has passed.
 
 After an ordinary clone, initialize the pinned protocol before checking it:
 
@@ -87,8 +97,10 @@ require a separate explicit task.
 ## Synthetic persistence proof
 
 `bookradar-poc` is a four-command demonstration. It opens and closes a
-caller-selected database on every invocation. The example path is under the
-ignored `target/` directory:
+caller-selected database on every invocation. The example path is under
+`target/`. `.gitignore` ignores `/target/`, the workspace build directory, and
+`/tests/target/`, which covers a nested cargo output under `tests/`. Current
+workspace tests compile into `target/`.
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"

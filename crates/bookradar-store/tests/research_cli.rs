@@ -2,14 +2,16 @@
 
 #![forbid(unsafe_code)]
 
+mod common;
+
 use std::process::Command;
+
+use common::TempDir;
 
 #[test]
 fn research_cli_transcript_and_exits_are_stable() {
-    let dir = std::env::temp_dir().join(format!("bookradar-research-cli-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir(&dir).expect("temp");
-    let ledger = dir.join("demo.sqlite");
+    let dir = TempDir::new();
+    let ledger = dir.child("demo.sqlite");
     let ledger = ledger.to_str().expect("utf8");
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let partial = root.join("tests/fixtures/research/partial.json");
@@ -81,7 +83,7 @@ fn research_cli_transcript_and_exits_are_stable() {
          input=2 finding=0 outcome=quarantined reason=identity-conflict\n"
     );
 
-    let empty_path = dir.join("empty.sqlite");
+    let empty_path = dir.child("empty.sqlite");
     let empty_path = empty_path.to_str().expect("utf8");
     assert_eq!(run(&["init", empty_path]).status, 0);
     let empty = run(&["inspect", empty_path]);
@@ -91,7 +93,7 @@ fn research_cli_transcript_and_exits_are_stable() {
         "envelopes=0 runs=0 findings=0 observations=0 reviews=0\n"
     );
 
-    let malformed = dir.join("malformed.json");
+    let malformed = dir.child("malformed.json");
     std::fs::write(&malformed, b"{").expect("malformed");
     let malformed = run(&[
         "import",
@@ -112,11 +114,35 @@ fn research_cli_transcript_and_exits_are_stable() {
     assert_eq!(run(&["current", empty_path, "soon"]).status, 2);
     let missing = run(&[
         "inspect",
-        dir.join("missing.sqlite").to_str().expect("utf8"),
+        dir.child("missing.sqlite").to_str().expect("utf8"),
     ]);
     assert_eq!(missing.status, 1);
     assert!(missing.stderr.starts_with("not-found:"));
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn empty_research_current_exits_zero_without_candidates() {
+    let dir = TempDir::new();
+    let path = dir.child("empty.sqlite");
+    let path = path.to_str().expect("utf8");
+    let init = run(&["init", path]);
+    assert_eq!(init.status, 0, "{}", init.stderr);
+    let current = run(&[
+        "current",
+        path,
+        "synthetic:producer",
+        "synthetic:source",
+        "OFFER-A",
+        "generation-1",
+        "10",
+        "1793548800",
+    ]);
+    assert_eq!(current.status, 0, "{}", current.stderr);
+    assert_eq!(
+        current.stdout,
+        "candidates=0 conflict=clear recheck=clear verification=not-eligible\n"
+    );
+    assert!(current.stderr.is_empty());
 }
 
 struct Output {

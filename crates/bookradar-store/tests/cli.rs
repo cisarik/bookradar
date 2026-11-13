@@ -83,6 +83,35 @@ fn usage_and_storage_failures_use_stable_exits() {
     assert!(after.stdout.contains("candidate=1"));
 }
 
+#[test]
+fn empty_history_exits_zero_with_count_zero() {
+    let dir = TempDir::new();
+    let path = dir.child("store.sqlite");
+    let path = path.to_str().expect("utf8");
+    let init = run(&["init", path]);
+    assert_eq!(init.status, 0, "{}", init.stderr);
+    let history = run(&["history", path]);
+    assert_eq!(history.status, 0, "{}", history.stderr);
+    assert_eq!(history.stdout, "synthetic=true offer=1/1 count=0\n");
+    assert!(history.stderr.is_empty());
+}
+
+#[test]
+fn empty_current_exits_zero_with_status_empty() {
+    let dir = TempDir::new();
+    let path = dir.child("store.sqlite");
+    let path = path.to_str().expect("utf8");
+    let init = run(&["init", path]);
+    assert_eq!(init.status, 0, "{}", init.stderr);
+    let current = run(&["current", path, "1793548800"]);
+    assert_eq!(current.status, 0, "{}", current.stderr);
+    assert_eq!(
+        current.stdout,
+        "synthetic=true offer=1/1 target=10 status=empty\n"
+    );
+    assert!(current.stderr.is_empty());
+}
+
 struct Output {
     status: i32,
     stdout: String,
