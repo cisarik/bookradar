@@ -2,10 +2,10 @@
 
 use std::time::SystemTime;
 
-use bookradar_core::EditionId;
+use bookradar_core::{OfferId, OfferRef, SourceId};
 use bookradar_store::{
     CurrentView, HistoryEntry, OpenMode, ResearchOfferKey, ResearchSnapshot, ResearchStore, Store,
-    StoreError, synthetic_offer,
+    StoreError,
 };
 
 use crate::config::Config;
@@ -22,6 +22,8 @@ pub struct Dashboard {
     pub source_ref: String,
     pub listing_ref: String,
     pub listing_generation: String,
+    pub source_id: u64,
+    pub offer_id: u64,
     pub observations: Slot<ObservationReading>,
     pub research: Slot<ResearchReading>,
 }
@@ -51,7 +53,7 @@ pub struct SlotFailure {
 }
 
 pub fn load(config: &Config) -> Dashboard {
-    let observations = load_observations(&config.store, config.target, config.now);
+    let observations = load_observations(config);
     let research = load_research(config);
     Dashboard {
         store_path: config.store.display().to_string(),
@@ -63,20 +65,21 @@ pub fn load(config: &Config) -> Dashboard {
         source_ref: config.source_ref.clone(),
         listing_ref: config.listing_ref.clone(),
         listing_generation: config.listing_generation.clone(),
+        source_id: config.source_id,
+        offer_id: config.offer_id,
         observations,
         research,
     }
 }
 
-fn load_observations(
-    path: &std::path::Path,
-    target: EditionId,
-    now: std::time::SystemTime,
-) -> Slot<ObservationReading> {
+fn load_observations(config: &Config) -> Slot<ObservationReading> {
     let loaded = (|| {
-        let mut store = Store::open(path, OpenMode::ReadOnly)?;
-        let history = store.history(synthetic_offer())?;
-        let current = store.current(synthetic_offer(), target, now)?;
+        let source = SourceId::new(config.source_id).map_err(StoreError::Domain)?;
+        let offer_id = OfferId::new(config.offer_id).map_err(StoreError::Domain)?;
+        let offer = OfferRef::new(source, offer_id);
+        let mut store = Store::open(&config.store, OpenMode::ReadOnly)?;
+        let history = store.history(offer)?;
+        let current = store.current(offer, config.target, config.now)?;
         drop(store);
         Ok(ObservationReading { history, current })
     })();

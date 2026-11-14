@@ -13,7 +13,8 @@ use bookradar_core::{
     SubjectIdentity, TimestampAssertion,
 };
 use bookradar_store::{
-    Fixture, OpenMode, ResearchStore, ReviewDraft, Store, append_fixture, synthetic_offer,
+    CandidateQuery, Fixture, OpenMode, PromotionRequest, ResearchStore, ReviewDraft, Store,
+    append_fixture, promote, synthetic_offer,
 };
 use bookradar_ui::render_html;
 
@@ -654,5 +655,83 @@ fn json_string(text: &str) -> String {
 fn assert_no_stock(html: &str) {
     for phrase in SOLD {
         assert!(!html.contains(phrase), "{phrase}");
+    }
+}
+
+#[test]
+fn renders_non_default_offer() {
+    let dir = TempDir::new();
+    let (store_path, mut store) = create_store(&dir, "observations.sqlite");
+    let (ledger_path, _ledger) = create_ledger(&dir, "research.sqlite");
+    let mut sample = common::Sample::qualifying(7, T0);
+    sample.source = 2;
+    sample.offer_id = 7;
+    append(&mut store, &sample).expect("append");
+    drop(store);
+    let now = unix(T0 + 1_000);
+    let mut selected = config_at(&store_path, &ledger_path, now, T0 + 1_000);
+    selected.source_id = 2;
+    selected.offer_id = 7;
+    let html = render_html(&bookradar_ui::load(&selected));
+    assert!(section(&html, "query").contains("source 2, offer 7"));
+    assert!(section(&html, "current-assessment").contains("Checked available"));
+    let defaults = render_html(&load_at(&store_path, &ledger_path, now, T0 + 1_000));
+    assert!(section(&defaults, "query").contains("source 1, offer 1"));
+    assert!(section(&defaults, "current-assessment").contains("No observations for this offer."));
+}
+
+#[test]
+fn promoted_offer_renders_checked_available() {
+    let dir = TempDir::new();
+    let (ledger_path, mut ledger) = create_ledger(&dir, "research.sqlite");
+    import_bytes(&mut ledger, &research_fixture("newer.json"), 100);
+    drop(ledger);
+    let (store_path, store) = create_store(&dir, "observations.sqlite");
+    drop(store);
+    let mut ledger = ResearchStore::open(&ledger_path, OpenMode::ReadOnly).expect("ledger");
+    let observed = T0;
+    promote(&mut ledger, &store_path, &promotion(observed)).expect("promote");
+    drop(ledger);
+    let now = observed + 1_000;
+    let html = render_html(&load_at(&store_path, &ledger_path, unix(now), now));
+    assert!(section(&html, "query").contains("source 1, offer 1"));
+    assert!(section(&html, "current-assessment").contains("Checked available"));
+    assert!(!section(&html, "research-current-candidates").contains("Checked available"));
+}
+
+fn promotion(observed: i64) -> PromotionRequest {
+    let at = unix(observed);
+    PromotionRequest {
+        query: CandidateQuery {
+            producer_id: "synthetic:producer".to_owned(),
+            run_id: "synthetic:run".to_owned(),
+            finding_id: "synthetic:newer".to_owned(),
+            receipt_id: 1,
+            position: 0,
+        },
+        source_id: 1,
+        offer_id: 1,
+        observation_id: 1,
+        subject: SubjectIdentity::Resolved(bookradar_core::EditionId::new(10).expect("edition")),
+        language: LanguageEvidence::Slovak,
+        access: bookradar_core::AccessResult::Readable,
+        listing: bookradar_core::ListingDisposition::Present,
+        availability: bookradar_core::SourceAvailability::Available,
+        source_statement: "reviewer:statement".to_owned(),
+        evidence_method: EvidenceMethod::Manual,
+        evidence_reference: "reviewer:evidence".to_owned(),
+        cover_subject: true,
+        cover_language: true,
+        cover_availability: true,
+        reviewer_approval: Some("reviewer:approval".to_owned()),
+        assessor: "reviewer:assessor".to_owned(),
+        rationale: "reviewer:rationale".to_owned(),
+        observed_at: at,
+        observed_offset: 3_600,
+        captured_at: at,
+        captured_offset: 3_600,
+        ingested_at: unix(observed + 10),
+        assessed_at: unix(observed + 10),
+        recorded_at: unix(observed + 10),
     }
 }

@@ -4,10 +4,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use bookradar_core::EditionId;
+use bookradar_core::{EditionId, OfferId, SourceId};
 use bookradar_store::ResearchOfferKey;
 
-pub const USAGE: &str = "bookradar-ui --store <path> --research-ledger <path> --now <unix-seconds> [--bind 127.0.0.1:<port>] [--producer <identifier>] [--source-ref <identifier>] [--listing-ref <identifier>] [--listing-generation <identifier>] [--target-edition <positive-integer>]";
+pub const USAGE: &str = "bookradar-ui --store <path> --research-ledger <path> --now <unix-seconds> [--bind 127.0.0.1:<port>] [--source-id <positive-integer>] [--offer-id <positive-integer>] [--producer <identifier>] [--source-ref <identifier>] [--listing-ref <identifier>] [--listing-generation <identifier>] [--target-edition <positive-integer>]";
 
 /// Checked operator settings for one immutable local page.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +21,8 @@ pub struct Config {
     pub source_ref: String,
     pub listing_ref: String,
     pub listing_generation: String,
+    pub source_id: u64,
+    pub offer_id: u64,
     pub target: EditionId,
 }
 
@@ -33,7 +35,8 @@ pub fn help_text() -> &'static str {
     "bookradar-ui serves one local read-only BookRadar page.\n\
      \n\
      bookradar-ui --store <path> --research-ledger <path> --now <unix-seconds> \\\n\
-       [--bind 127.0.0.1:<port>] [--producer <identifier>] \\\n\
+       [--bind 127.0.0.1:<port>] [--source-id <positive-integer>] \\\n\
+       [--offer-id <positive-integer>] [--producer <identifier>] \\\n\
        [--source-ref <identifier>] [--listing-ref <identifier>] \\\n\
        [--listing-generation <identifier>] [--target-edition <positive-integer>]\n\
      \n\
@@ -55,6 +58,8 @@ pub fn parse_args(args: &[String]) -> Result<CliRequest, String> {
     let mut source_ref = None;
     let mut listing_ref = None;
     let mut listing_generation = None;
+    let mut source_id = None;
+    let mut offer_id = None;
     let mut target = None;
     let mut index = 0;
     while index < args.len() {
@@ -74,6 +79,8 @@ pub fn parse_args(args: &[String]) -> Result<CliRequest, String> {
             "--source-ref" => assign_once(&mut source_ref, value.clone(), flag)?,
             "--listing-ref" => assign_once(&mut listing_ref, value.clone(), flag)?,
             "--listing-generation" => assign_once(&mut listing_generation, value.clone(), flag)?,
+            "--source-id" => assign_once(&mut source_id, value.clone(), flag)?,
+            "--offer-id" => assign_once(&mut offer_id, value.clone(), flag)?,
             "--target-edition" => assign_once(&mut target, value.clone(), flag)?,
             "--help" => {
                 return Err(format!("{USAGE}; --help must be the only argument"));
@@ -109,6 +116,18 @@ pub fn parse_args(args: &[String]) -> Result<CliRequest, String> {
         Some(text) => parse_edition(&text)
             .ok_or_else(|| format!("{USAGE}; --target-edition must be a positive integer"))?,
     };
+    let source_id = match source_id {
+        None => 1,
+        Some(text) => parse_store_id(&text).ok_or_else(|| {
+            format!("{USAGE}; --source-id must be a positive integer that fits the store")
+        })?,
+    };
+    let offer_id = match offer_id {
+        None => 1,
+        Some(text) => parse_store_id(&text).ok_or_else(|| {
+            format!("{USAGE}; --offer-id must be a positive integer that fits the store")
+        })?,
+    };
     Ok(CliRequest::Run(Box::new(Config {
         store: PathBuf::from(store),
         research_ledger: PathBuf::from(research_ledger),
@@ -119,6 +138,8 @@ pub fn parse_args(args: &[String]) -> Result<CliRequest, String> {
         source_ref,
         listing_ref,
         listing_generation,
+        source_id,
+        offer_id,
         target,
     })))
 }
@@ -157,6 +178,19 @@ fn parse_bind(text: &str) -> Option<SocketAddr> {
     }
     let port: u16 = port.parse().ok()?;
     Some(SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), port)))
+}
+
+fn parse_store_id(text: &str) -> Option<u64> {
+    if text.is_empty() || text.starts_with('+') || text.starts_with('-') {
+        return None;
+    }
+    let id: u64 = text.parse().ok()?;
+    if i64::try_from(id).is_err() {
+        return None;
+    }
+    SourceId::new(id).ok()?;
+    OfferId::new(id).ok()?;
+    Some(id)
 }
 
 fn parse_edition(text: &str) -> Option<EditionId> {

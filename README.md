@@ -4,19 +4,20 @@ BookRadar is intended to monitor and research availability of physical
 Slovak-language books, including used editions and accurate differentiation
 from Czech editions. Rust is the selected implementation language.
 
-Status: the workspace contains a dependency-free `bookradar-core` verification kernel, local observation history, a synthetic research-ingestion proof, and a local read-only UI shell. The research boundary validates strict versioned JSON, retains quarantine and replay conflicts in a separate SQLite ledger, and creates only unreviewed or disputed candidates. Structural admission does not establish truth or verified stock. `bookradar-ui` renders one fixed startup snapshot on loopback; it is not a running monitor. Live ingestion and deployment remain unimplemented. License and contribution policies remain undecided.
+Status: the workspace contains a dependency-free `bookradar-core` verification kernel, local observation history, a synthetic research-ingestion proof, a reviewer-governed promotion path, and a local read-only UI shell. The research boundary validates strict versioned JSON, retains quarantine and replay conflicts in a separate SQLite ledger, and creates only unreviewed or disputed candidates. Structural admission does not establish truth or verified stock. `bookradar-review` can copy an admitted finding into the observation store only when a person supplies a complete positive attestation. `bookradar-ui` renders one fixed startup snapshot on loopback; it is not a running monitor. Live ingestion and deployment remain unimplemented. License and contribution policies remain undecided.
 
 ## Workspace
 
 | Package | Role |
 |---|---|
 | `bookradar-core` | Stateless verification of one supplied observation and one explicit assessment context. |
-| `bookradar-store` | Local SQLite history, deterministic current-candidate selection, the `bookradar-poc` binary, and the `bookradar-research` binary. |
+| `bookradar-store` | Local SQLite history, deterministic current-candidate selection, and the `bookradar-poc`, `bookradar-research`, and `bookradar-review` binaries. |
 | `bookradar-ui` | Local read-only HTML shell over one observation store and one research ledger. It adds no registry dependency. |
 
 ```text
 bookradar-poc → bookradar-store → bookradar-core
 bookradar-research → bookradar-store → bookradar-core
+bookradar-review → bookradar-store → bookradar-core
 bookradar-ui → bookradar-store → bookradar-core
                               → rusqlite / bundled SQLite
                               → serde / serde_json
@@ -151,10 +152,13 @@ change the query, the instant, or the loaded files.
 
 The binary accepts only a literal `127.0.0.1` bind. The default is
 `127.0.0.1:0`, and stdout prints `listening=http://127.0.0.1:<port>`. The
-default observation offer is source `1`, offer `1`. The default target edition
+default observation offer is source `1`, offer `1`. `--source-id` and
+`--offer-id` select another stored offer; `bookradar-poc` still writes only
+source `1`, offer `1`. The default target edition
 is `10`. The default research key is `synthetic:producer`,
 `synthetic:source`, `OFFER-A`, `generation-1`. Optional flags are `--bind`,
-`--producer`, `--source-ref`, `--listing-ref`, `--listing-generation`, and
+`--source-id`, `--offer-id`, `--producer`, `--source-ref`, `--listing-ref`,
+`--listing-generation`, and
 `--target-edition`. `--help` prints usage and exits `0`. Invalid arguments
 exit `2` before any database or socket is opened. A bind failure exits `1`
 and does not try another address.
@@ -289,3 +293,65 @@ The wire contract is [research input v1](docs/research-input-v1.md). The
 storage decision is [ADR 0005](docs/adr/0005-versioned-research-admission.md).
 The target edition id on `current` is supplied by the operator. It is not read
 from the finding, and the ledger does not create an edition registry record.
+
+## Governed review and promotion
+
+`bookradar-review` has three commands: `show`, `promote`, and `review`.
+`show` prints one ledger finding and does not write. `promote` writes one
+observation only after the finding outcome is `admitted` and the reviewer
+attests a resolved Slovak edition, a readable present available listing, all
+three claim covers, direct-browser or manual evidence, and reviewer approval.
+Agent-only evidence, a rejected, quarantined, or replayed row, and an
+incomplete attestation are refused before the observation store is created.
+A later `review` appends one application-store revision. It does not change
+the ledger. The ledger stays read-only for this binary. Position `0` is a
+valid finding position. Receipt id `0` is not.
+
+The files below are synthetic. The JSON does not verify a listing. The
+positive `current` line below is a decision about the reviewer-typed values
+at the injected instant. Defaults stay source `1` and offer `1`. Selecting
+`--source-id 2 --offer-id 7` changes only the UI query; this demonstration
+does not create that offer. The decision record is
+[ADR 0008](docs/adr/0008-governed-review-and-promotion.md).
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo +1.99.1 build --locked --offline -p bookradar-store --bin bookradar-research --bin bookradar-review --bin bookradar-poc
+mkdir -p target/review-promotion
+target/debug/bookradar-research init target/review-promotion/ledger.sqlite
+target/debug/bookradar-research import target/review-promotion/ledger.sqlite crates/bookradar-store/tests/fixtures/research/newer.json 1793545200
+target/debug/bookradar-review show --ledger target/review-promotion/ledger.sqlite --producer synthetic:producer --run synthetic:run --finding synthetic:newer --receipt 1 --position 0
+target/debug/bookradar-poc init target/review-promotion/observations.sqlite
+target/debug/bookradar-review promote \
+  --ledger target/review-promotion/ledger.sqlite \
+  --store target/review-promotion/observations.sqlite \
+  --producer synthetic:producer --run synthetic:run --finding synthetic:newer \
+  --receipt 1 --position 0 \
+  --source-id 1 --offer-id 1 --observation-id 1 --edition-id 10 \
+  --language slovak --access readable --listing present --availability available \
+  --source-statement reviewer:statement \
+  --evidence-method manual --evidence-reference reviewer:evidence \
+  --cover-subject --cover-language --cover-availability \
+  --reviewer-approval reviewer:approval \
+  --assessor reviewer:assessor --rationale reviewer:rationale \
+  --observed-at 1793548100 --observed-offset 3600 \
+  --ingested-at 1793548700 --assessed-at 1793548700 --recorded-at 1793548700
+target/debug/bookradar-poc current target/review-promotion/observations.sqlite 1793548800
+target/debug/bookradar-poc history target/review-promotion/observations.sqlite
+target/debug/bookradar-review review \
+  --store target/review-promotion/observations.sqlite \
+  --source-id 1 --offer-id 1 --observation-id 1 --expected-revision 1 \
+  --knowledge disputed \
+  --assessor reviewer:assessor --rationale reviewer:later-dispute \
+  --assessed-at 1793548750 --recorded-at 1793548750
+target/debug/bookradar-ui \
+  --store target/review-promotion/observations.sqlite \
+  --research-ledger target/review-promotion/ledger.sqlite \
+  --now 1793548800 \
+  --source-id 1 --offer-id 1
+```
+
+Exit `2` is a usage error and happens before either database is opened.
+Exit `1` is a refusal (`unknown-finding`, `not-admitted`,
+`agent-only-evidence`, or `incomplete-attestation`) or a storage failure.
+The category is the stderr prefix. There is no separate policy exit code.

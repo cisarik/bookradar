@@ -175,6 +175,41 @@ impl ResearchOfferKey {
     }
 }
 
+/// Identity of one stored research finding. Position may be zero.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateQuery {
+    pub producer_id: String,
+    pub run_id: String,
+    pub finding_id: String,
+    pub receipt_id: u64,
+    pub position: u64,
+}
+
+/// One ledger row addressed by receipt, position, and finding identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateRecord {
+    pub producer_id: String,
+    pub run_id: String,
+    pub finding_id: String,
+    pub receipt_id: u64,
+    pub position: u64,
+    pub outcome: String,
+    pub reason: String,
+    pub ledger_knowledge: Option<String>,
+    pub canonical_finding: Option<Vec<u8>>,
+    pub source_ref: Option<String>,
+    pub listing_ref: Option<String>,
+    pub listing_generation: Option<String>,
+    pub ledger_source_id: Option<u64>,
+    pub ledger_offer_id: Option<u64>,
+    pub ledger_observation_id: Option<u64>,
+}
+
+/// Research producer, run, and finding identifiers use one grammar.
+pub fn is_research_identifier(text: &str) -> bool {
+    crate::research_contract::is_identifier(text)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputView {
     pub receipt_id: u64,
@@ -389,6 +424,53 @@ impl ResearchStore {
         let snapshot = read_snapshot(&tx)?;
         tx.commit().map_err(map_sqlite)?;
         Ok(snapshot)
+    }
+
+    /// Reads one finding without writing. `None` means the identity does not match.
+    pub fn candidate(
+        &mut self,
+        query: &CandidateQuery,
+    ) -> Result<Option<CandidateRecord>, StoreError> {
+        let receipt = i64_id(query.receipt_id)?;
+        let position = i64_id(query.position)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(map_sqlite)?;
+        let row = tx
+            .query_row(
+                "SELECT f.producer_id, f.run_id, f.finding_id, f.outcome, f.reason,
+                        f.canonical_finding, f.source_ref, f.listing_ref, f.listing_generation,
+                        f.source_id, f.offer_id, f.observation_id,
+                        CASE
+                            WHEN f.observation_id IS NULL THEN f.knowledge
+                            ELSE (
+                                SELECT r.knowledge FROM reviews r
+                                WHERE r.source_id = f.source_id AND r.offer_id = f.offer_id
+                                  AND r.observation_id = f.observation_id
+                                ORDER BY r.revision DESC LIMIT 1
+                            )
+                        END
+                 FROM research_findings f
+                 WHERE f.receipt_id = ?1 AND f.position = ?2
+                   AND f.producer_id = ?3 AND f.run_id = ?4 AND f.finding_id = ?5",
+                params![
+                    receipt,
+                    position,
+                    query.producer_id,
+                    query.run_id,
+                    query.finding_id
+                ],
+                decode_candidate,
+            )
+            .optional()
+            .map_err(map_sqlite)?;
+        tx.commit().map_err(map_sqlite)?;
+        Ok(row.map(|mut record| {
+            record.receipt_id = query.receipt_id;
+            record.position = query.position;
+            record
+        }))
     }
 
     pub fn current(
@@ -1379,6 +1461,55 @@ fn count(tx: &Transaction<'_>, sql: &str) -> Result<u64, StoreError> {
         .query_row(sql, [], |row| row.get(0))
         .map_err(map_sqlite)?;
     u64_id(value)
+}
+
+fn decode_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateRecord> {
+    let producer_id: String = row.get(0)?;
+    let run_id: String = row.get(1)?;
+    let finding_id: String = row.get(2)?;
+    let outcome: String = row.get(3)?;
+    let reason: String = row.get(4)?;
+    let canonical_finding: Option<Vec<u8>> = row.get(5)?;
+    let source_ref: Option<String> = row.get(6)?;
+    let listing_ref: Option<String> = row.get(7)?;
+    let listing_generation: Option<String> = row.get(8)?;
+    let ledger_source_id: Option<i64> = row.get(9)?;
+    let ledger_offer_id: Option<i64> = row.get(10)?;
+    let ledger_observation_id: Option<i64> = row.get(11)?;
+    let ledger_knowledge: Option<String> = row.get(12)?;
+    Ok(CandidateRecord {
+        producer_id,
+        run_id,
+        finding_id,
+        receipt_id: 0,
+        position: 0,
+        outcome,
+        reason,
+        ledger_knowledge,
+        canonical_finding,
+        source_ref,
+        listing_ref,
+        listing_generation,
+        ledger_source_id: optional_stored_id(ledger_source_id).map_err(store_row)?,
+        ledger_offer_id: optional_stored_id(ledger_offer_id).map_err(store_row)?,
+        ledger_observation_id: optional_stored_id(ledger_observation_id).map_err(store_row)?,
+    })
+}
+
+fn optional_stored_id(value: Option<i64>) -> Result<Option<u64>, StoreError> {
+    match value {
+        None => Ok(None),
+        Some(value) => {
+            let id = u64_id(value)?;
+            if id == 0 {
+                Err(StoreError::UnsupportedFormat {
+                    reason: "stored-id",
+                })
+            } else {
+                Ok(Some(id))
+            }
+        }
+    }
 }
 
 fn u64_id(value: i64) -> Result<u64, StoreError> {

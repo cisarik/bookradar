@@ -48,8 +48,7 @@ fn render_query(out: &mut String, dashboard: &Dashboard) {
         "Observation offer",
         &format!(
             "source {}, offer {}",
-            bookradar_store::synthetic_offer().source().get(),
-            bookradar_store::synthetic_offer().offer().get()
+            dashboard.source_id, dashboard.offer_id
         ),
     );
     field(out, "Target edition", &dashboard.target_edition.to_string());

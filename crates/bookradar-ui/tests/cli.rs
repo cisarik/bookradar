@@ -178,3 +178,49 @@ fn bind_failure_exits_without_address_fallback() {
     assert!(!missing.exists());
     assert!(listener.local_addr().is_ok());
 }
+
+#[test]
+fn invalid_source_and_offer_ids_exit_before_io() {
+    let dir = TempDir::new();
+    let missing = dir.child("missing.sqlite");
+    let missing_text = missing.display().to_string();
+    let base = vec![
+        "--store".to_owned(),
+        missing_text.clone(),
+        "--research-ledger".to_owned(),
+        missing_text,
+        "--now".to_owned(),
+        "1793523600".to_owned(),
+    ];
+    for (flag, value) in [
+        ("--source-id", "0"),
+        ("--source-id", "-1"),
+        ("--source-id", "abc"),
+        ("--source-id", "9223372036854775808"),
+        ("--offer-id", "0"),
+        ("--offer-id", "-2"),
+        ("--offer-id", "nope"),
+    ] {
+        let mut args = base.clone();
+        args.push(flag.to_owned());
+        args.push(value.to_owned());
+        let (code, _stdout, stderr) = run_ui(&args);
+        assert_eq!(code, Some(2), "{flag} {value}: {stderr}");
+        assert!(stderr.starts_with("usage:"), "{stderr}");
+        assert!(!missing.exists());
+    }
+    let mut duplicate = base.clone();
+    duplicate.extend([
+        "--source-id".to_owned(),
+        "1".to_owned(),
+        "--source-id".to_owned(),
+        "2".to_owned(),
+    ]);
+    let (code, _stdout, stderr) = run_ui(&duplicate);
+    assert_eq!(code, Some(2), "{stderr}");
+    let mut missing_value = base;
+    missing_value.push("--offer-id".to_owned());
+    let (code, _stdout, stderr) = run_ui(&missing_value);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(!missing.exists());
+}

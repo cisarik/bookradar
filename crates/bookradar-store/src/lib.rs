@@ -7,6 +7,7 @@
 
 mod fixtures;
 mod history;
+mod promotion;
 mod research;
 mod research_contract;
 mod store;
@@ -16,9 +17,11 @@ pub use history::{
     CandidateAssessment, CurrentView, HistoryEntry, StockClaim, render_current,
     render_current_labels, render_history,
 };
+pub use promotion::{PromotionRequest, ReviewWorkflowError, append_application_review, promote};
 pub use research::{
-    FindingView, ImportContext, ImportReport, InputView, ResearchError, ResearchOfferKey,
-    ResearchSnapshot, ResearchStore, render_import, render_inspect, render_research_current,
+    CandidateQuery, CandidateRecord, FindingView, ImportContext, ImportReport, InputView,
+    ResearchError, ResearchOfferKey, ResearchSnapshot, ResearchStore, is_research_identifier,
+    render_import, render_inspect, render_research_current,
 };
 pub use research_contract::{
     ValidationOutcome, ValidationPosition, ValidationReport, validate_research,

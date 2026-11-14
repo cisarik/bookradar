@@ -287,6 +287,8 @@ pub fn config_at(store: &Path, ledger: &Path, now: SystemTime, now_seconds: i64)
         source_ref: "synthetic:source".to_owned(),
         listing_ref: "OFFER-A".to_owned(),
         listing_generation: "generation-1".to_owned(),
+        source_id: 1,
+        offer_id: 1,
         target: EditionId::new(10).expect("edition"),
     }
 }
