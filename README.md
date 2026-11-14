@@ -307,16 +307,20 @@ A later `review` appends one application-store revision. It does not change
 the ledger. The ledger stays read-only for this binary. Position `0` is a
 valid finding position. Receipt id `0` is not.
 
-The files below are synthetic. The JSON does not verify a listing. The
-positive `current` line below is a decision about the reviewer-typed values
-at the injected instant. Defaults stay source `1` and offer `1`. Selecting
-`--source-id 2 --offer-id 7` changes only the UI query; this demonstration
-does not create that offer. The decision record is
-[ADR 0008](docs/adr/0008-governed-review-and-promotion.md).
+The files below are synthetic. The JSON does not verify a listing. Each
+positive line is a decision about the reviewer-typed values at the injected
+instant. Defaults stay source `1` and offer `1`. Selecting `--source-id 2
+--offer-id 7` changes only the UI query; this demonstration does not create
+that offer. The second promotion cites the same finding under observation `2`
+and edition `11` at the same observed instant, which is an equal-time edition
+conflict. Rejecting that second observation clears the conflict. The decision
+record is [ADR 0008](docs/adr/0008-governed-review-and-promotion.md).
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo +1.99.1 build --locked --offline -p bookradar-store --bin bookradar-research --bin bookradar-review --bin bookradar-poc
+cargo +1.99.1 build --locked --offline \
+  -p bookradar-store --bin bookradar-research --bin bookradar-review --bin bookradar-poc \
+  -p bookradar-ui --bin bookradar-ui
 mkdir -p target/review-promotion
 target/debug/bookradar-research init target/review-promotion/ledger.sqlite
 target/debug/bookradar-research import target/review-promotion/ledger.sqlite crates/bookradar-store/tests/fixtures/research/newer.json 1793545200
@@ -338,18 +342,53 @@ target/debug/bookradar-review promote \
   --ingested-at 1793548700 --assessed-at 1793548700 --recorded-at 1793548700
 target/debug/bookradar-poc current target/review-promotion/observations.sqlite 1793548800
 target/debug/bookradar-poc history target/review-promotion/observations.sqlite
+target/debug/bookradar-review promote \
+  --ledger target/review-promotion/ledger.sqlite \
+  --store target/review-promotion/observations.sqlite \
+  --producer synthetic:producer --run synthetic:run --finding synthetic:newer \
+  --receipt 1 --position 0 \
+  --source-id 1 --offer-id 1 --observation-id 2 --edition-id 11 \
+  --language slovak --access readable --listing present --availability available \
+  --source-statement reviewer:statement \
+  --evidence-method manual --evidence-reference reviewer:evidence \
+  --cover-subject --cover-language --cover-availability \
+  --reviewer-approval reviewer:approval \
+  --assessor reviewer:assessor --rationale reviewer:rationale \
+  --observed-at 1793548100 --observed-offset 3600 \
+  --ingested-at 1793548700 --assessed-at 1793548700 --recorded-at 1793548700
+target/debug/bookradar-poc current target/review-promotion/observations.sqlite 1793548800
 target/debug/bookradar-review review \
   --store target/review-promotion/observations.sqlite \
-  --source-id 1 --offer-id 1 --observation-id 1 --expected-revision 1 \
-  --knowledge disputed \
-  --assessor reviewer:assessor --rationale reviewer:later-dispute \
+  --source-id 1 --offer-id 1 --observation-id 2 --expected-revision 1 \
+  --knowledge rejected \
+  --assessor reviewer:assessor --rationale reviewer:reject-conflicting-edition \
   --assessed-at 1793548750 --recorded-at 1793548750
+target/debug/bookradar-poc current target/review-promotion/observations.sqlite 1793548800
 target/debug/bookradar-ui \
   --store target/review-promotion/observations.sqlite \
   --research-ledger target/review-promotion/ledger.sqlite \
   --now 1793548800 \
   --source-id 1 --offer-id 1
 ```
+
+The first `current` prints `conflict=clear`, `verification=eligible`, and
+`Checked available -- unix:1793548100; expires_unix=1793634500`. `history`
+prints `count=1` and `review=supported` for observation 1.
+
+The `current` after the second promotion prints `latest_attempts=1,2`,
+`candidates=1,2 conflict=unresolved recheck=clear verification=not-eligible`,
+and the label `Unverified -- unresolved conflict`. Both attempts stay at
+`unix:1793548100`.
+
+The rejection prints `reviewed source=1 offer=1 observation=2 revision=2`.
+The following `current` prints `conflict=clear`, `verification=eligible`, and
+`Checked available -- unix:1793548100; expires_unix=1793634500`. Observation 2
+remains in the attempt list. The UI keeps running until it is stopped. Its
+page for source 1, offer 1, and edition 10 shows `Checked available — Unix
+1793548100; expires at Unix 1793634500`, conflict `clear`, candidate 1
+eligible, and candidate 2 not eligible. Observation 2 keeps its supported
+revision and the later rejected revision. The research candidate stays
+unreviewed, agent-only, and not eligible.
 
 Exit `2` is a usage error and happens before either database is opened.
 Exit `1` is a refusal (`unknown-finding`, `not-admitted`,
